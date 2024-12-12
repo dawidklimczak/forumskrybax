@@ -13,6 +13,12 @@ import shutil
 st.set_page_config(page_title="Transkrypcja Audio", page_icon="🎤")
 st.title("Transkrypcja plików audio")
 
+# Inicjalizacja stanu sesji dla transkrypcji
+if 'transcription_done' not in st.session_state:
+    st.session_state.transcription_done = False
+if 'full_transcript' not in st.session_state:
+    st.session_state.full_transcript = ""
+
 # Sprawdzenie dostępności ffmpeg
 def check_ffmpeg():
     try:
@@ -107,50 +113,54 @@ def save_to_word(text, filename="transkrypcja.docx"):
 uploaded_file = st.file_uploader("Wybierz plik audio", type=['mp3', 'wav', 'm4a', 'ogg'])
 
 if uploaded_file:
-    with st.spinner('Przetwarzanie pliku audio...'):
-        # Zapisz uploadowany plik tymczasowo
-        temp_input = tempfile.NamedTemporaryFile(delete=False)
-        temp_input.write(uploaded_file.getvalue())
-        temp_input.close()
+    # Przycisk do rozpoczęcia transkrypcji
+    if st.button("Rozpocznij transkrypcję"):
+        with st.spinner('Przetwarzanie pliku audio...'):
+            # Zapisz uploadowany plik tymczasowo
+            temp_input = tempfile.NamedTemporaryFile(delete=False)
+            temp_input.write(uploaded_file.getvalue())
+            temp_input.close()
+            
+            try:
+                # Podziel na części
+                chunks = split_audio(temp_input.name)
+                
+                # Transkrybuj każdą część
+                st.session_state.full_transcript = ""
+                progress_bar = st.progress(0)
+                
+                for i, chunk_path in enumerate(chunks):
+                    transcript = transcribe_audio(client, chunk_path)
+                    if transcript:
+                        st.session_state.full_transcript += transcript + "\n"
+                        progress_bar.progress((i + 1) / len(chunks))
+                    
+                    # Usuń tymczasowy plik
+                    if os.path.exists(chunk_path):
+                        os.unlink(chunk_path)
+                
+                # Usuń oryginalny tymczasowy plik
+                if os.path.exists(temp_input.name):
+                    os.unlink(temp_input.name)
+                
+                st.session_state.transcription_done = True
+                
+            except Exception as e:
+                st.error(f"Wystąpił błąd podczas przetwarzania pliku: {str(e)}")
+                # Upewnij się, że pliki tymczasowe zostaną usunięte
+                if os.path.exists(temp_input.name):
+                    os.unlink(temp_input.name)
+
+    # Wyświetl transkrypcję i przycisk do pobrania tylko jeśli transkrypcja została wykonana
+    if st.session_state.transcription_done and st.session_state.full_transcript:
+        st.subheader("Transkrypcja:")
+        st.text_area("", st.session_state.full_transcript, height=300)
         
-        try:
-            # Podziel na części
-            chunks = split_audio(temp_input.name)
-            
-            # Transkrybuj każdą część
-            full_transcript = ""
-            progress_bar = st.progress(0)
-            
-            for i, chunk_path in enumerate(chunks):
-                transcript = transcribe_audio(client, chunk_path)
-                if transcript:
-                    full_transcript += transcript + "\n"
-                    progress_bar.progress((i + 1) / len(chunks))
-                
-                # Usuń tymczasowy plik
-                if os.path.exists(chunk_path):
-                    os.unlink(chunk_path)
-            
-            # Usuń oryginalny tymczasowy plik
-            if os.path.exists(temp_input.name):
-                os.unlink(temp_input.name)
-            
-            if full_transcript:
-                # Wyświetl transkrypcję
-                st.subheader("Transkrypcja:")
-                st.text_area("", full_transcript, height=300)
-                
-                # Przycisk do pobrania pliku Word
-                if st.button("Pobierz jako dokument Word"):
-                    doc_buffer = save_to_word(full_transcript)
-                    st.download_button(
-                        label="Pobierz transkrypcję",
-                        data=doc_buffer,
-                        file_name="transkrypcja.docx",
-                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                    )
-        except Exception as e:
-            st.error(f"Wystąpił błąd podczas przetwarzania pliku: {str(e)}")
-            # Upewnij się, że pliki tymczasowe zostaną usunięte
-            if os.path.exists(temp_input.name):
-                os.unlink(temp_input.name)
+        # Przycisk do pobrania pliku Word
+        doc_buffer = save_to_word(st.session_state.full_transcript)
+        st.download_button(
+            label="Pobierz jako dokument Word",
+            data=doc_buffer,
+            file_name="transkrypcja.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
