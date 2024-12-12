@@ -1,35 +1,49 @@
 import streamlit as st
 import os
+import subprocess
 from openai import OpenAI
 from docx import Document
 import math
 from pydub import AudioSegment
 import tempfile
 import io
+import shutil
 
 # Konfiguracja strony Streamlit
 st.set_page_config(page_title="Transkrypcja Audio", page_icon="🎤")
 st.title("Transkrypcja plików audio")
 
+# Sprawdzenie dostępności ffmpeg
+def check_ffmpeg():
+    try:
+        # Sprawdź czy ffmpeg jest zainstalowany
+        if not shutil.which('ffmpeg'):
+            return False
+        # Sprawdź czy ffprobe jest zainstalowany
+        if not shutil.which('ffprobe'):
+            return False
+        return True
+    except Exception:
+        return False
+
+# Sprawdzenie ffmpeg na starcie aplikacji
+if not check_ffmpeg():
+    st.error("ffmpeg nie jest zainstalowany w systemie. Skontaktuj się z administratorem.")
+    st.stop()
+
 # Lepsza obsługa inicjalizacji OpenAI
 def initialize_openai():
     try:
-        # Sprawdź klucz w secrets
         openai_api_key = st.secrets.get("OPENAI_API_KEY")
         if not openai_api_key:
-            # Sprawdź zmienną środowiskową jako backup
             openai_api_key = os.environ.get("OPENAI_API_KEY")
         
         if not openai_api_key:
             raise ValueError("Nie znaleziono klucza API OpenAI")
             
-        # Podstawowa inicjalizacja bez dodatkowych parametrów
         return OpenAI(api_key=openai_api_key)
     except Exception as e:
         st.error(f"Błąd podczas inicjalizacji API OpenAI: {str(e)}")
-        st.error("Upewnij się, że klucz API jest poprawnie skonfigurowany w secrets lub zmiennych środowiskowych.")
-        # Wyświetl dostępne secrets (bez pokazywania samego klucza)
-        st.write("Dostępne secrets:", list(st.secrets.keys()) if hasattr(st.secrets, 'keys') else "Brak")
         return None
 
 # Inicjalizacja klienta OpenAI
@@ -39,26 +53,30 @@ if not client:
 
 def split_audio(audio_path, max_size_mb=25):
     """Dzieli plik audio na części o maksymalnym rozmiarze"""
-    # Wczytanie pliku audio
-    audio = AudioSegment.from_file(audio_path)
-    
-    # Obliczenie długości jednego fragmentu
-    file_size = os.path.getsize(audio_path)
-    num_chunks = math.ceil(file_size / (max_size_mb * 1024 * 1024))
-    chunk_length_ms = len(audio) // num_chunks
-    
-    chunks = []
-    for i in range(num_chunks):
-        start_time = i * chunk_length_ms
-        end_time = (i + 1) * chunk_length_ms if i < num_chunks - 1 else len(audio)
-        chunk = audio[start_time:end_time]
+    try:
+        # Wczytanie pliku audio
+        audio = AudioSegment.from_file(audio_path)
         
-        # Zapisanie chunka do tymczasowego pliku
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
-        chunk.export(temp_file.name, format="mp3")
-        chunks.append(temp_file.name)
-    
-    return chunks
+        # Obliczenie długości jednego fragmentu
+        file_size = os.path.getsize(audio_path)
+        num_chunks = math.ceil(file_size / (max_size_mb * 1024 * 1024))
+        chunk_length_ms = len(audio) // num_chunks
+        
+        chunks = []
+        for i in range(num_chunks):
+            start_time = i * chunk_length_ms
+            end_time = (i + 1) * chunk_length_ms if i < num_chunks - 1 else len(audio)
+            chunk = audio[start_time:end_time]
+            
+            # Zapisanie chunka do tymczasowego pliku
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
+            chunk.export(temp_file.name, format="mp3")
+            chunks.append(temp_file.name)
+        
+        return chunks
+    except Exception as e:
+        st.error(f"Błąd podczas dzielenia pliku audio: {str(e)}")
+        raise
 
 def transcribe_audio(client, audio_path):
     """Transkrybuje pojedynczy plik audio"""
@@ -79,7 +97,6 @@ def save_to_word(text, filename="transkrypcja.docx"):
     doc = Document()
     doc.add_paragraph(text)
     
-    # Zapisz do bufora
     doc_buffer = io.BytesIO()
     doc.save(doc_buffer)
     doc_buffer.seek(0)
@@ -111,10 +128,12 @@ if uploaded_file:
                     progress_bar.progress((i + 1) / len(chunks))
                 
                 # Usuń tymczasowy plik
-                os.unlink(chunk_path)
+                if os.path.exists(chunk_path):
+                    os.unlink(chunk_path)
             
             # Usuń oryginalny tymczasowy plik
-            os.unlink(temp_input.name)
+            if os.path.exists(temp_input.name):
+                os.unlink(temp_input.name)
             
             if full_transcript:
                 # Wyświetl transkrypcję
