@@ -1,4 +1,5 @@
-streamlit==1.31.0
-openai==1.11.0
-python-docx==1.0.1
-pydub==0.25.1
+streamlit
+openai
+python-docx
+pydub
+ffmpeg-python

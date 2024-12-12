@@ -14,7 +14,7 @@ st.title("Transkrypcja plików audio")
 # Lepsza obsługa inicjalizacji OpenAI
 def initialize_openai():
     try:
-        # Najpierw sprawdź, czy klucz jest w secrets
+        # Sprawdź klucz w secrets
         openai_api_key = st.secrets.get("OPENAI_API_KEY")
         if not openai_api_key:
             # Sprawdź zmienną środowiskową jako backup
@@ -23,11 +23,12 @@ def initialize_openai():
         if not openai_api_key:
             raise ValueError("Nie znaleziono klucza API OpenAI")
             
+        # Podstawowa inicjalizacja bez dodatkowych parametrów
         return OpenAI(api_key=openai_api_key)
     except Exception as e:
         st.error(f"Błąd podczas inicjalizacji API OpenAI: {str(e)}")
         st.error("Upewnij się, że klucz API jest poprawnie skonfigurowany w secrets lub zmiennych środowiskowych.")
-        # Wyświetl zawartość secrets (bez pokazywania samego klucza)
+        # Wyświetl dostępne secrets (bez pokazywania samego klucza)
         st.write("Dostępne secrets:", list(st.secrets.keys()) if hasattr(st.secrets, 'keys') else "Brak")
         return None
 
