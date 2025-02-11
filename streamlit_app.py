@@ -1,13 +1,13 @@
 import streamlit as st
 import os
-import subprocess
+import librosa
+import soundfile as sf
+import numpy as np
 from openai import OpenAI
 from docx import Document
 import math
-from pydub import AudioSegment
 import tempfile
 import io
-import shutil
 
 # Konfiguracja strony Streamlit
 st.set_page_config(page_title="Transkrypcja Audio", page_icon="🎤")
@@ -18,24 +18,6 @@ if 'transcription_done' not in st.session_state:
     st.session_state.transcription_done = False
 if 'full_transcript' not in st.session_state:
     st.session_state.full_transcript = ""
-
-# Sprawdzenie dostępności ffmpeg
-def check_ffmpeg():
-    try:
-        # Sprawdź czy ffmpeg jest zainstalowany
-        if not shutil.which('ffmpeg'):
-            return False
-        # Sprawdź czy ffprobe jest zainstalowany
-        if not shutil.which('ffprobe'):
-            return False
-        return True
-    except Exception:
-        return False
-
-# Sprawdzenie ffmpeg na starcie aplikacji
-if not check_ffmpeg():
-    st.error("ffmpeg nie jest zainstalowany w systemie. Skontaktuj się z administratorem.")
-    st.stop()
 
 # Lepsza obsługa inicjalizacji OpenAI
 def initialize_openai():
@@ -60,23 +42,28 @@ if not client:
 def split_audio(audio_path, max_size_mb=25):
     """Dzieli plik audio na części o maksymalnym rozmiarze"""
     try:
-        # Wczytanie pliku audio
-        audio = AudioSegment.from_file(audio_path)
+        # Wczytanie pliku audio używając librosa
+        y, sr = librosa.load(audio_path)
         
-        # Obliczenie długości jednego fragmentu
-        file_size = os.path.getsize(audio_path)
-        num_chunks = math.ceil(file_size / (max_size_mb * 1024 * 1024))
-        chunk_length_ms = len(audio) // num_chunks
+        # Obliczenie rozmiaru jednej sekundy audio
+        bytes_per_second = sr * y.itemsize
+        
+        # Obliczenie maksymalnej długości fragmentu w sekundach
+        max_seconds = (max_size_mb * 1024 * 1024) / bytes_per_second
+        
+        # Obliczenie liczby fragmentów
+        total_seconds = len(y) / sr
+        num_chunks = math.ceil(total_seconds / max_seconds)
         
         chunks = []
         for i in range(num_chunks):
-            start_time = i * chunk_length_ms
-            end_time = (i + 1) * chunk_length_ms if i < num_chunks - 1 else len(audio)
-            chunk = audio[start_time:end_time]
+            start_sample = int(i * max_seconds * sr)
+            end_sample = int(min((i + 1) * max_seconds * sr, len(y)))
+            chunk = y[start_sample:end_sample]
             
             # Zapisanie chunka do tymczasowego pliku
-            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
-            chunk.export(temp_file.name, format="mp3")
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+            sf.write(temp_file.name, chunk, sr)
             chunks.append(temp_file.name)
         
         return chunks
@@ -117,7 +104,7 @@ if uploaded_file:
     if st.button("Rozpocznij transkrypcję"):
         with st.spinner('Przetwarzanie pliku audio...'):
             # Zapisz uploadowany plik tymczasowo
-            temp_input = tempfile.NamedTemporaryFile(delete=False)
+            temp_input = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
             temp_input.write(uploaded_file.getvalue())
             temp_input.close()
             
