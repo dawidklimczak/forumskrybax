@@ -1,11 +1,7 @@
 import streamlit as st
 import os
-import librosa
-import soundfile as sf
-import numpy as np
-from openai import OpenAI
+import assemblyai as aai
 from docx import Document
-import math
 import tempfile
 import io
 
@@ -18,77 +14,94 @@ if 'transcription_done' not in st.session_state:
     st.session_state.transcription_done = False
 if 'full_transcript' not in st.session_state:
     st.session_state.full_transcript = ""
+if 'utterances_data' not in st.session_state:
+    st.session_state.utterances_data = []
 
-# Lepsza obsługa inicjalizacji OpenAI
-def initialize_openai():
+# Inicjalizacja AssemblyAI
+def initialize_assemblyai():
     try:
-        openai_api_key = st.secrets.get("OPENAI_API_KEY")
-        if not openai_api_key:
-            openai_api_key = os.environ.get("OPENAI_API_KEY")
+        api_key = st.secrets.get("ASSEMBLYAI_API_KEY")
+        if not api_key:
+            api_key = os.environ.get("ASSEMBLYAI_API_KEY")
         
-        if not openai_api_key:
-            raise ValueError("Nie znaleziono klucza API OpenAI")
+        if not api_key:
+            raise ValueError("Nie znaleziono klucza API AssemblyAI")
             
-        return OpenAI(api_key=openai_api_key)
+        aai.settings.api_key = api_key
+        return True
     except Exception as e:
-        st.error(f"Błąd podczas inicjalizacji API OpenAI: {str(e)}")
-        return None
+        st.error(f"Błąd podczas inicjalizacji API AssemblyAI: {str(e)}")
+        return False
 
-# Inicjalizacja klienta OpenAI
-client = initialize_openai()
-if not client:
+# Inicjalizacja klienta AssemblyAI
+if not initialize_assemblyai():
     st.stop()
 
-def split_audio(audio_path, max_size_mb=25):
-    """Dzieli plik audio na części o maksymalnym rozmiarze"""
+def transcribe_audio(file_path, speakers_expected=2):
+    """
+    Transkrybuje plik audio używając AssemblyAI.
+    
+    Args:
+        file_path (str): Ścieżka do pliku audio
+        speakers_expected (int): Oczekiwana liczba rozmówców
+        
+    Returns:
+        tuple: (lista wypowiedzi, pełna transkrypcja jako tekst)
+    """
     try:
-        # Wczytanie pliku audio używając librosa
-        y, sr = librosa.load(audio_path)
+        # Konfiguracja transkrypcji
+        config = aai.TranscriptionConfig(
+            language_code="pl",  # Język polski
+            speaker_labels=True,  # Włączenie etykiet mówców
+            speakers_expected=speakers_expected   # Oczekiwana liczba rozmówców
+        )
         
-        # Obliczenie rozmiaru jednej sekundy audio
-        bytes_per_second = sr * y.itemsize
+        # Transkrypcja
+        transcriber = aai.Transcriber()
+        transcript = transcriber.transcribe(file_path, config=config)
         
-        # Obliczenie maksymalnej długości fragmentu w sekundach
-        max_seconds = (max_size_mb * 1024 * 1024) / bytes_per_second
+        # Sprawdzenie czy transkrypcja się powiodła
+        if transcript.status == aai.TranscriptStatus.error:
+            raise Exception(f"Błąd transkrypcji: {transcript.error}")
         
-        # Obliczenie liczby fragmentów
-        total_seconds = len(y) / sr
-        num_chunks = math.ceil(total_seconds / max_seconds)
+        # Przetwarzanie transkrypcji
+        utterances_data = []
+        full_text_parts = []
         
-        chunks = []
-        for i in range(num_chunks):
-            start_sample = int(i * max_seconds * sr)
-            end_sample = int(min((i + 1) * max_seconds * sr, len(y)))
-            chunk = y[start_sample:end_sample]
-            
-            # Zapisanie chunka do tymczasowego pliku
-            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
-            sf.write(temp_file.name, chunk, sr)
-            chunks.append(temp_file.name)
+        for utterance in transcript.utterances:
+            utterance_info = {
+                "speaker": f"Rozmówca {utterance.speaker}",
+                "text": utterance.text,
+                "start": utterance.start,
+                "end": utterance.end
+            }
+            utterances_data.append(utterance_info)
+            full_text_parts.append(f"{utterance_info['speaker']}: {utterance_info['text']}")
         
-        return chunks
-    except Exception as e:
-        st.error(f"Błąd podczas dzielenia pliku audio: {str(e)}")
-        raise
-
-def transcribe_audio(client, audio_path):
-    """Transkrybuje pojedynczy plik audio"""
-    try:
-        with open(audio_path, "rb") as audio_file:
-            transcript = client.audio.transcriptions.create(
-                file=audio_file,
-                model="whisper-1",
-                response_format="text"
-            )
-        return transcript
+        full_transcript = "\n\n".join(full_text_parts)
+        
+        return utterances_data, full_transcript
+    
     except Exception as e:
         st.error(f"Błąd podczas transkrypcji: {str(e)}")
-        return None
+        raise
 
-def save_to_word(text, filename="transkrypcja.docx"):
-    """Zapisuje tekst do pliku Word"""
+def save_to_word(utterances_data, filename="transkrypcja.docx"):
+    """Zapisuje transkrypcję z podziałem na mówców do pliku Word"""
     doc = Document()
-    doc.add_paragraph(text)
+    doc.add_heading('Transkrypcja nagrania', 0)
+    
+    for utterance in utterances_data:
+        # Dodaj nagłówek z mówcą
+        speaker_paragraph = doc.add_paragraph()
+        speaker_run = speaker_paragraph.add_run(f"{utterance['speaker']}:")
+        speaker_run.bold = True
+        
+        # Dodaj tekst wypowiedzi
+        doc.add_paragraph(utterance['text'])
+        
+        # Dodaj pustą linię dla czytelności
+        doc.add_paragraph()
     
     doc_buffer = io.BytesIO()
     doc.save(doc_buffer)
@@ -97,57 +110,88 @@ def save_to_word(text, filename="transkrypcja.docx"):
     return doc_buffer
 
 # Interface użytkownika
-uploaded_file = st.file_uploader("Wybierz plik audio", type=['mp3', 'wav', 'm4a', 'ogg'])
+st.sidebar.header("Ustawienia transkrypcji")
+speakers_expected = st.sidebar.number_input(
+    "Oczekiwana liczba rozmówców",
+    min_value=1,
+    max_value=10,
+    value=2,
+    help="Podaj przewidywaną liczbę osób mówiących w nagraniu"
+)
+
+uploaded_file = st.file_uploader("Wybierz plik audio", type=['mp3', 'wav', 'm4a', 'ogg', 'flac'])
 
 if uploaded_file:
+    st.info(f"Wybrano plik: {uploaded_file.name}")
+    st.info(f"Rozmiar pliku: {uploaded_file.size / (1024*1024):.2f} MB")
+    
     # Przycisk do rozpoczęcia transkrypcji
     if st.button("Rozpocznij transkrypcję"):
-        with st.spinner('Przetwarzanie pliku audio...'):
+        with st.spinner('Trwa transkrypcja nagrania (to może zająć kilka minut)...'):
             # Zapisz uploadowany plik tymczasowo
-            temp_input = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+            temp_input = tempfile.NamedTemporaryFile(delete=False, suffix=f'.{uploaded_file.name.split(".")[-1]}')
             temp_input.write(uploaded_file.getvalue())
             temp_input.close()
             
             try:
-                # Podziel na części
-                chunks = split_audio(temp_input.name)
+                # Transkrypcja
+                utterances_data, full_transcript = transcribe_audio(temp_input.name, speakers_expected)
                 
-                # Transkrybuj każdą część
-                st.session_state.full_transcript = ""
-                progress_bar = st.progress(0)
-                
-                for i, chunk_path in enumerate(chunks):
-                    transcript = transcribe_audio(client, chunk_path)
-                    if transcript:
-                        st.session_state.full_transcript += transcript + "\n"
-                        progress_bar.progress((i + 1) / len(chunks))
-                    
-                    # Usuń tymczasowy plik
-                    if os.path.exists(chunk_path):
-                        os.unlink(chunk_path)
-                
-                # Usuń oryginalny tymczasowy plik
-                if os.path.exists(temp_input.name):
-                    os.unlink(temp_input.name)
-                
+                # Zapisz wyniki do session_state
+                st.session_state.utterances_data = utterances_data
+                st.session_state.full_transcript = full_transcript
                 st.session_state.transcription_done = True
                 
+                st.success("Transkrypcja zakończona pomyślnie!")
+                
             except Exception as e:
-                st.error(f"Wystąpił błąd podczas przetwarzania pliku: {str(e)}")
-                # Upewnij się, że pliki tymczasowe zostaną usunięte
+                st.error(f"Wystąpił błąd podczas transkrypcji: {str(e)}")
+            
+            finally:
+                # Usuń tymczasowy plik
                 if os.path.exists(temp_input.name):
                     os.unlink(temp_input.name)
 
     # Wyświetl transkrypcję i przycisk do pobrania tylko jeśli transkrypcja została wykonana
     if st.session_state.transcription_done and st.session_state.full_transcript:
         st.subheader("Transkrypcja:")
-        st.text_area("", st.session_state.full_transcript, height=300)
+        
+        # Opcja wyświetlania
+        display_mode = st.radio(
+            "Sposób wyświetlania:",
+            ["Pełna transkrypcja", "Podział na wypowiedzi"],
+            horizontal=True
+        )
+        
+        if display_mode == "Pełna transkrypcja":
+            st.text_area("", st.session_state.full_transcript, height=400)
+        else:
+            # Wyświetl z podziałem na wypowiedzi
+            for i, utterance in enumerate(st.session_state.utterances_data):
+                with st.expander(f"{utterance['speaker']} ({utterance['start']/1000:.1f}s - {utterance['end']/1000:.1f}s)"):
+                    st.write(utterance['text'])
         
         # Przycisk do pobrania pliku Word
-        doc_buffer = save_to_word(st.session_state.full_transcript)
+        doc_buffer = save_to_word(st.session_state.utterances_data)
         st.download_button(
             label="Pobierz jako dokument Word",
             data=doc_buffer,
             file_name="transkrypcja.docx",
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         )
+        
+        # Statystyki
+        st.subheader("Statystyki:")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("Liczba wypowiedzi", len(st.session_state.utterances_data))
+        
+        with col2:
+            unique_speakers = len(set([u['speaker'] for u in st.session_state.utterances_data]))
+            st.metric("Liczba rozmówców", unique_speakers)
+        
+        with col3:
+            if st.session_state.utterances_data:
+                total_duration = st.session_state.utterances_data[-1]['end'] / 1000
+                st.metric("Czas trwania", f"{total_duration:.1f}s")
